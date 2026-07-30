@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureCord // Private Group</title>
+    <style>
+        :root {
+            --bg-dark: #313338;
+            --bg-sidebar: #2b2d31;
+            --bg-chat: #313338;
+            --bg-input: #383a40;
+            --accent: #5865f2;
+            --accent-hover: #4752c4;
+            --text-main: #dbdee1;
+            --text-muted: #949ba4;
+            --danger: #ed4245;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; overflow: hidden; }
+
+        /* Fullscreen Gate / Auth Screens */
+        .auth-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .auth-card {
+            background: #2b2d31; padding: 30px; border-radius: 8px; width: 100%; max-width: 400px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5); text-align: center;
+        }
+        .auth-card h2 { color: #fff; margin-bottom: 20px; font-size: 1.4rem; }
+        .input-field {
+            width: 100%; padding: 10px; margin-bottom: 15px; background: var(--bg-dark);
+            border: 1px solid #1f2023; border-radius: 4px; color: #fff; font-size: 1rem;
+        }
+        .input-field:focus { outline: none; border-color: var(--accent); }
+        .btn {
+            width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none;
+            border-radius: 4px; font-weight: bold; cursor: pointer; transition: background 0.2s;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .switch-text { margin-top: 15px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; }
+        .switch-text span { color: var(--accent); }
+        .error-text { color: var(--danger); font-size: 0.8rem; margin-top: 10px; display: none; }
+
+        /* Discord Layout (Hidden until logged in) */
+        #app-container { display: none; width: 100%; height: 100%; display: flex; }
+        .sidebar { width: 240px; background: var(--bg-sidebar); display: flex; flex-direction: column; border-right: 1px solid #1f2023; }
+        .sidebar-header { padding: 20px; font-weight: bold; border-bottom: 2px solid var(--bg-dark); color: #fff; }
+        .channel-list { padding: 10px; flex-grow: 1; }
+        .channel { padding: 8px 12px; border-radius: 4px; color: var(--text-muted); cursor: pointer; margin-bottom: 4px; }
+        .channel.active, .channel:hover { background: rgba(255,255,255,0.08); color: #fff; }
+        
+        .user-panel { padding: 10px; background: #232428; display: flex; justify-content: space-between; align-items: center; }
+        .username-display { font-size: 0.9rem; font-weight: bold; color: #fff; }
+        .logout-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; }
+        .logout-btn:hover { color: var(--danger); }
+
+        .chat-area { flex-grow: 1; display: flex; flex-direction: column; background: var(--bg-chat); }
+        .chat-header { padding: 20px; border-bottom: 1px solid #1f2023; font-weight: bold; color: #fff; }
+        .messages-box { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .message { display: flex; flex-direction: column; }
+        .message-user { font-weight: bold; font-size: 0.9rem; color: #fff; margin-bottom: 2px; }
+        .message-text { font-size: 0.95rem; color: var(--text-main); line-height: 1.4; }
+        
+        .chat-input-area { padding: 20px; }
+        .chat-input-wrapper { display: background; background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
+        .chat-input { width: 100%; background: transparent; border: none; color: #fff; font-size: 1rem; }
+        .chat-input:focus { outline: none; }
+    </style>
+</head>
+<body>
+
+    <!-- STEP 1: INVITE CODE GATE -->
+    <div id="gate-screen" class="auth-container">
+        <div class="auth-card">
+            <h2>Enter Group Invite Code</h2>
+            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:15px;">This is a private group. Enter the secret code provided by your friend.</p>
+            <input type="password" id="invite-code-input" class="input-field" placeholder="Secret Group Code">
+            <button class="btn" onclick="verifyGroupCode()">Continue</button>
+            <div id="gate-error" class="error-text">Incorrect Invite Code!</div>
+        </div>
+    </div>
+
+    <!-- STEP 2: SIGN UP / LOGIN SCREEN -->
+    <div id="auth-screen" class="auth-container" style="display: none;">
+        <div class="auth-card">
+            <h2 id="auth-title">Create Account</h2>
+            <input type="text" id="username-input" class="input-field" placeholder="Choose a Username">
+            <input type="password" id="password-input" class="input-field" placeholder="Choose a Password">
+            <button class="btn" id="auth-btn" onclick="handleAuth()">Sign Up</button>
+            <div id="auth-error" class="error-text">Error message here</div>
+            <div class="switch-text" onclick="toggleAuthMode()">
+                <span id="switch-txt-btn">Already have an account? Log in</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- STEP 3: MAIN DISCORD CHAT INTERFACE -->
+    <div id="app-container">
+        <div class="sidebar">
+            <div class="sidebar-header"># Secret Lounge</div>
+            <div class="channel-list">
+                <div class="channel active"># general-chat</div>
+            </div>
+            <div class="user-panel">
+                <div id="logged-user-display" class="username-display">User</div>
+                <button class="logout-btn" onclick="logout()">Log Out</button>
+            </div>
+        </div>
+        <div class="chat-area">
+            <div class="chat-header"># general-chat</div>
+            <div id="messages-box" class="messages-box">
+                <!-- Messages will load here -->
+                <div class="message">
+                    <span class="message-user">System</span>
+                    <span class="message-text">Welcome to the secure server! Say hello.</span>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <input type="text" id="message-input" class="chat-input" placeholder="Message #general-chat" onkeypress="checkEnter(event)">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const GROUP_INVITE_CODE = "secret123"; // Change this to whatever group code you want
+        let isLoginMode = false;
+
+        // Check local storage on startup to see if already logged in
+        window.onload = function() {
+            const savedUser = localStorage.getItem('chat_current_user');
+            if (savedUser) {
+                document.getElementById('gate-screen').style.display = 'none';
+                document.getElementById('auth-screen').style.display = 'none';
+                document.getElementById('app-container').style.display = 'flex';
+                document.getElementById('logged-user-display').innerText = savedUser;
+                loadMessages();
+            }
+        }
+
+        function verifyGroupCode() {
+            const code = document.getElementById('invite-code-input').value;
+            if (code === GROUP_INVITE_CODE) {
+                document.getElementById('gate-screen').style.display = 'none';
+                document.getElementById('auth-screen').style.display = 'flex';
+            } else {
+                document.getElementById('gate-error').style.display = 'block';
+            }
+        }
+
+        function toggleAuthMode() {
+            isLoginMode = !isLoginMode;
+            document.getElementById('auth-title').innerText = isLoginMode ? "Welcome Back" : "Create Account";
+            document.getElementById('auth-btn').innerText = isLoginMode ? "Log In" : "Sign Up";
+            document.getElementById('switch-txt-btn').innerText = isLoginMode ? "Need an account? Sign up" : "Already have an account? Log in";
+            document.getElementById('auth-error').style.display = 'none';
+        }
+
+        function handleAuth() {
+            const user = document.getElementById('username-input').value.trim();
+            const pass = document.getElementById('password-input').value.trim();
+            const errorEl = document.getElementById('auth-error');
+
+            if (!user || !pass) {
+                errorEl.innerText = "Fill out all fields!";
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            let usersDB = JSON.parse(localStorage.getItem('chat_users_db') || "{}");
+
+            if (!isLoginMode) {
+                // Sign Up
+                if (usersDB[user]) {
+                    errorEl.innerText = "Username already taken!";
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                usersDB[user] = pass;
+                localStorage.setItem('chat_users_db', JSON.stringify(usersDB));
+                alert("Account created successfully! You can now log in.");
+                toggleAuthMode();
+            } else {
+                // Log In
+                if (usersDB[user] && usersDB[user] === pass) {
+                    localStorage.setItem('chat_current_user', user);
+                    document.getElementById('auth-screen').style.display = 'none';
+                    document.getElementById('app-container').style.display = 'flex';
+                    document.getElementById('logged-user-display').innerText = user;
+                    loadMessages();
+                } else {
+                    errorEl.innerText = "Invalid username or password!";
+                    errorEl.style.display = 'block';
+                }
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('chat_current_user');
+            location.reload();
+        }
+
+        function checkEnter(e) {
+            if (e.key === 'Enter') {
+                const text = document.getElementById('message-input').value.trim();
+                const currentUser = localStorage.getItem('chat_current_user');
+                if (!text) return;
+
+                let messages = JSON.parse(localStorage.getItem('chat_messages') || "[]");
+                messages.push({ user: currentUser, text: text });
+                localStorage.setItem('chat_messages', JSON.stringify(messages));
+
+                document.getElementById('message-input').value = '';
+                loadMessages();
+            }
+        }
+
+        function loadMessages() {
+            const box = document.getElementById('messages-box');
+            let messages = JSON.parse(localStorage.getItem('chat_messages') || "[]");
+            
+            let html = `<div class="message"><span class="message-user">System</span><span class="message-text">Welcome to the secure server! Say hello.</span></div>`;
+            
+            messages.forEach(m => {
+                html += `<div class="message">
+                    <span class="message-user">${m.user}</span>
+                    <span class="message-text">${m.text}</span>
+                </div>`;
+            });
+
+            box.innerHTML = html;
+            box.scrollTop = box.scrollHeight;
+        }
+    </script>
+</body>
+</html>
