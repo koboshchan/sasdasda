@@ -2,7 +2,23 @@
 // appending the counter as a string to the server's challenge, until
 // sha256(challenge + nonce) ends in `difficulty` hex zeros. Must match
 // server/src/pow.ts exactly - same digest, same "ends with", same counting.
-import { sha256Hex } from './hash.js';
+//
+// The hot loop uses @noble/hashes' synchronous sha256 rather than
+// crypto/hash.ts's WebCrypto sha256Hex: awaiting crypto.subtle.digest per
+// iteration measured at ~83k hashes/sec, which made difficulty 5 a ~13s
+// solve - impractical for register/createRoom. Synchronous hashing is
+// roughly 14x faster, making difficulty 5 a ~1s solve instead. Every other
+// use of sha256 in this app (H1/H2 derivation, password hashing, RSA/AES/
+// Ed25519 key material) stays on WebCrypto via hash.ts - only this
+// brute-force loop needed the swap.
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
+
+const encoder = new TextEncoder();
+
+function sha256HexSync(input: string): string {
+  return bytesToHex(sha256(encoder.encode(input)));
+}
 
 export interface PowSolution {
   challenge: string;
@@ -25,13 +41,16 @@ export async function solvePow(
 
   for (;;) {
     const nonce = i.toString(16);
-    const digest = await sha256Hex(challenge + nonce);
+    const digest = sha256HexSync(challenge + nonce);
     if (digest.endsWith(target)) return { challenge, nonce };
 
     i++;
     // Yield to the event loop periodically so a difficulty-5 solve doesn't
     // freeze the UI thread, and report progress for a "Verifying... N%" bar.
-    if (i % 2000 === 0) {
+    // Checked far less often than the old WebCrypto loop since each
+    // iteration is now much cheaper - checking every 2k would mostly just
+    // add setTimeout scheduling overhead.
+    if (i % 50000 === 0) {
       onProgress?.(i, estimatedTotal);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }

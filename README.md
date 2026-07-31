@@ -54,13 +54,25 @@ loop; the server container runs `tsx watch` against a bind-mounted
    ciphertext. The server verifies this against the sender's registered
    public key and refuses to store or broadcast anything unsigned or
    invalidly signed. It also never sees the plaintext: it only ever holds
-   `iv` and `ct`.
+   `iv` and `ct`. A message's `_id` is `sha256(canonical)` rather than a
+   random UUID, so resubmitting an old, already-stored signed frame
+   verbatim - a signature proves authorship, not freshness - collides on
+   insert instead of quietly becoming a duplicate; a claimed timestamp more
+   than 5 minutes from the server's clock is rejected outright (see
+   `server/src/messages.ts`).
 4. **Proof-of-work gates every write-ish endpoint** (register, login,
-   create/join room, send message, fetch history) with an
-   escalating-difficulty sha256 puzzle - the server hands out
-   `sha256(randomBytes(32))`, the client counts up in hex appending the
-   counter as a string until the digest ends in `difficulty` zero hex
-   digits, and each challenge is burned after one use.
+   create/join room, send message, fetch history, user-key lookup) with an
+   escalating-difficulty sha256 puzzle - the server hands out a
+   self-describing, HMAC-authenticated challenge (nothing is stored until
+   it's actually solved, so issuing challenges for free costs an attacker's
+   memory nothing), the client counts up in hex appending the counter as a
+   string until the digest ends in `difficulty` zero hex digits, and each
+   solved challenge is burned after one use (see `server/src/pow.ts`). PoW
+   makes each request cost something (anti-*bot*); it deliberately isn't
+   expensive enough at interactive difficulties to bound sustained *volume*
+   from an already-authenticated account, so a token-bucket rate limit sits
+   alongside it for that (15-message burst / 5 sustained per second on
+   sending - see `server/src/ratelimit.ts`).
 
 ## Threat model & limitations
 
@@ -120,6 +132,12 @@ Other things worth knowing:
   with this code" and "this room doesn't exist at all" - if it distinguished
   the two, an attacker could use the response to check candidate codes
   against known rooms.
+- **`GET /api/users/:username/key` only resolves people you already share a
+  room with** (or your own key). Otherwise a single account would let
+  anyone enumerate the full set of registered usernames at network speed -
+  see `server/src/rooms.ts::sharesRoomWith`. Every legitimate lookup in the
+  app (verifying a message's sender) is already scoped to a room you're
+  subscribed to, so this doesn't restrict normal use.
 
 ## Layout
 
@@ -130,11 +148,13 @@ client/           esbuild + TypeScript, no framework
   src/store/      IndexedDB vault (identity, room keys, pinned peer keys, session)
   src/ui/         screen controllers (auth, rooms, chat)
 server/           Express + ws + MongoDB
-  src/keys.ts     RSA keypair, generated on first boot, persisted to server/data/keys
-  src/pow.ts      proof-of-work challenge issuance/verification
-  src/auth.ts     register + challenge-response login
-  src/rooms.ts    room create/join/list
-  src/messages.ts signature verification + persistence
-  src/ws/hub.ts   WebSocket fan-out
+  src/keys.ts       RSA keypair, generated on first boot, persisted to server/data/keys
+  src/pow.ts        stateless HMAC-authenticated proof-of-work challenges
+  src/ratelimit.ts  per-key token-bucket rate limiting (the anti-flood layer PoW isn't)
+  src/auth.ts       register + challenge-response login
+  src/rooms.ts      room create/join/list, sharesRoomWith()
+  src/messages.ts   signature verification + persistence + replay rejection
+  src/mongoErrors.ts shared Mongo duplicate-key detection
+  src/ws/hub.ts     WebSocket fan-out
 docker-compose.yml
 ```

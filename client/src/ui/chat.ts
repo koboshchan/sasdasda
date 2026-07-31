@@ -23,7 +23,7 @@ import {
   fingerprintFromRawB64,
 } from '../crypto/identity.js';
 import * as api from '../net/rest.js';
-import type { InboundMsgNew } from '../net/ws.js';
+import type { InboundMsgNew, InboundError } from '../net/ws.js';
 import { checkAndPinPeer, listRoomsLocal, setKv, type StoredRoom } from '../store/vault.js';
 import { showRoomsScreen } from './screens.js';
 import { state } from '../state.js';
@@ -44,6 +44,7 @@ interface RenderableMessage {
 export interface ChatController {
   openRoom: (room: StoredRoom) => Promise<void>;
   handleIncomingMessage: (m: InboundMsgNew) => void;
+  handleWsError: (err: InboundError) => void;
 }
 
 export function wireChatScreen(): ChatController {
@@ -176,6 +177,20 @@ export function wireChatScreen(): ChatController {
     void renderMessage(m);
   }
 
+  function handleWsError(err: InboundError): void {
+    console.error(`WS error [${err.code}]: ${err.message}`);
+    // Most error codes (bad_request, forbidden, unauthorized, pow_failed,
+    // server_error) reflect a client bug rather than something the user did
+    // - console logging is enough. rate_limited and message_rejected are
+    // the two a real person can actually hit and should act on, so surface
+    // them directly instead of failing silently.
+    if (err.code === 'rate_limited') {
+      alert("You're sending messages too fast - slow down a bit and try again.");
+    } else if (err.code === 'message_rejected') {
+      alert(`Message not sent: ${err.message}`);
+    }
+  }
+
   messageInput.addEventListener('keypress', (ev) => {
     if (ev.key === 'Enter') void handleSend();
   });
@@ -263,5 +278,5 @@ export function wireChatScreen(): ChatController {
 
   void refreshIdentityPanel();
 
-  return { openRoom, handleIncomingMessage };
+  return { openRoom, handleIncomingMessage, handleWsError };
 }

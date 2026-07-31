@@ -4,7 +4,7 @@
 import { fetchAndSolvePow, type PowSolution } from '../crypto/pow.js';
 import { getSession } from '../store/vault.js';
 
-export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history';
+export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history' | 'userKey';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -81,8 +81,8 @@ export function logout(): Promise<{ ok: true }> {
   return rawFetch('/api/logout', { method: 'POST' });
 }
 
-export function getUserKey(username: string): Promise<{ edPubB64: string }> {
-  return rawFetch(`/api/users/${encodeURIComponent(username)}/key`, { method: 'GET' });
+export function getUserKey(username: string, onProgress?: ProgressCb): Promise<{ edPubB64: string }> {
+  return getWithPow(`/api/users/${encodeURIComponent(username)}/key`, 'userKey', {}, onProgress);
 }
 
 // --- Rooms ---

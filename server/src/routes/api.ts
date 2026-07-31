@@ -9,9 +9,14 @@ import {
   logoutSession,
   getUserPublicKey,
 } from '../auth.js';
-import { createRoom, joinRoom, listRooms, isMember } from '../rooms.js';
+import { createRoom, joinRoom, listRooms, isMember, sharesRoomWith } from '../rooms.js';
 import { getHistory } from '../messages.js';
 import { requireAuth, requirePow } from '../middleware.js';
+import { take } from '../ratelimit.js';
+
+// 30-lookup burst, sustained 10/sec thereafter, per authenticated user.
+const USERKEY_RATE_CAPACITY = 30;
+const USERKEY_RATE_PER_SEC = 10;
 
 export const apiRouter = Router();
 
@@ -93,7 +98,34 @@ apiRouter.post('/logout', requireAuth, async (req, res) => {
 });
 
 apiRouter.get('/users/:username/key', requireAuth, async (req, res) => {
-  const edPubB64 = await getUserPublicKey(req.params.username ?? '');
+  const target = req.params.username ?? '';
+  const requester = req.username!;
+
+  const pow: PowSubmission = {
+    challenge: String(req.query.challenge ?? ''),
+    nonce: String(req.query.nonce ?? ''),
+  };
+  if (!verifyAndBurn('userKey', pow)) {
+    res.status(403).json({ error: 'Proof of work missing, invalid, or already used' });
+    return;
+  }
+  if (!take(`userKey:${requester}`, USERKEY_RATE_CAPACITY, USERKEY_RATE_PER_SEC)) {
+    res.status(429).json({ error: 'Too many key lookups - slow down and try again shortly' });
+    return;
+  }
+
+  // Self-lookup is always allowed (client/src/main.ts checks its own
+  // identity against the account's registered key on session resume).
+  // Otherwise, only resolve keys for people the requester already shares a
+  // room with - this is what keeps the endpoint from being a free
+  // username-enumeration oracle for every registered account.
+  const isSelf = target === requester;
+  if (!isSelf && !(await sharesRoomWith(requester, target))) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const edPubB64 = await getUserPublicKey(target);
   if (!edPubB64) {
     res.status(404).json({ error: 'User not found' });
     return;

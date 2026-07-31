@@ -24,7 +24,7 @@ async function ensureIdentity(): Promise<void> {
 function connectSocket(token: string, chatCtrl: ReturnType<typeof wireChatScreen>): void {
   state.socket?.close();
   const socket = new ChatSocket(token);
-  socket.onErrorEvent((err) => console.error(`WS error [${err.code}]: ${err.message}`));
+  socket.onErrorEvent(chatCtrl.handleWsError);
   socket.onMessageEvent(chatCtrl.handleIncomingMessage);
   socket.connect();
   state.socket = socket;

@@ -10,6 +10,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { getDb } from './db.js';
 import { rsaDecryptToString } from './keys.js';
 import { sha256Hex } from './pow.js';
+import { isDuplicateKeyError } from './mongoErrors.js';
 import { LOGIN_SALT_TTL_MS, SESSION_TTL_MS } from './config.js';
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
@@ -62,7 +63,16 @@ export async function registerUser(
   const existing = await db.users.findOne({ _id: username });
   if (existing) throw new AuthError(409, 'Username already taken');
 
-  await db.users.insertOne({ _id: username, ph, edPub: edPubB64, createdAt: new Date() });
+  // Same non-atomicity as rooms.ts::createRoom: findOne is a fast path,
+  // not a lock. Two concurrent registrations for the same username can
+  // both pass it; Mongo's unique _id index is what actually decides, and
+  // the loser gets a clean 409 instead of an uncaught 500.
+  try {
+    await db.users.insertOne({ _id: username, ph, edPub: edPubB64, createdAt: new Date() });
+  } catch (err) {
+    if (isDuplicateKeyError(err)) throw new AuthError(409, 'Username already taken');
+    throw err;
+  }
 }
 
 /**

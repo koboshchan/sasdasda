@@ -4,10 +4,21 @@
 // must do is verify the Ed25519 signature over the message before accepting
 // it, using the sender's public key registered at signup; anything unsigned
 // or with an invalid signature is rejected and never written to the DB.
-import { randomUUID } from 'node:crypto';
+//
+// A valid signature proves authorship, not freshness: resubmitting an
+// old, already-stored (roomId, sender, ts, iv, ct, sig) tuple verifies just
+// as well the second time, since it's byte-identical to the first. To stop
+// that replay, `_id` is derived deterministically from the signed content
+// rather than a fresh random UUID, so an identical resubmission collides on
+// insert (Mongo's unique _id index) instead of quietly becoming a second
+// message. Two distinct legitimate messages would only collide if roomId,
+// sender, ts (millisecond) AND the 12 random IV bytes all matched -
+// astronomically unlikely.
 import { getDb, type MessageDoc } from './db.js';
 import { getUserPublicKey } from './auth.js';
 import { verifyEd25519 } from './sig.js';
+import { sha256Hex } from './pow.js';
+import { isDuplicateKeyError } from './mongoErrors.js';
 
 export interface IncomingMessage {
   roomId: string;
@@ -19,6 +30,11 @@ export interface IncomingMessage {
 }
 
 export class MessageRejected extends Error {}
+
+// How far a claimed `ts` may drift from the server's own clock. Bounds how
+// far in the future an attacker could usefully pre-sign a message, and
+// stops a message from being back/post-dated to distort room ordering.
+const TS_WINDOW_MS = 5 * 60 * 1000;
 
 /** The exact byte string the client signs and the server re-derives to verify. */
 export function canonicalMessage(m: Pick<IncomingMessage, 'roomId' | 'sender' | 'ts' | 'iv' | 'ct'>): string {
@@ -43,10 +59,12 @@ function isValidShape(m: IncomingMessage): boolean {
  * checked session validity, room membership, and proof-of-work before
  * calling this - this function only handles the signature/storage step.
  * Throws MessageRejected (never stores anything) if the signature is
- * missing or does not verify against the sender's registered public key.
+ * missing, does not verify against the sender's registered public key, the
+ * timestamp is out of window, or this exact message was already stored.
  */
 export async function verifyAndPersistMessage(input: IncomingMessage): Promise<MessageDoc> {
   if (!isValidShape(input)) throw new MessageRejected('Malformed message');
+  if (Math.abs(Date.now() - input.ts) > TS_WINDOW_MS) throw new MessageRejected('Timestamp too far from server time');
 
   const edPubB64 = await getUserPublicKey(input.sender);
   if (!edPubB64) throw new MessageRejected('Unknown sender');
@@ -56,7 +74,7 @@ export async function verifyAndPersistMessage(input: IncomingMessage): Promise<M
   if (!ok) throw new MessageRejected('Invalid or missing signature');
 
   const doc: MessageDoc = {
-    _id: randomUUID(),
+    _id: sha256Hex(data),
     roomId: input.roomId,
     sender: input.sender,
     iv: input.iv,
@@ -66,7 +84,13 @@ export async function verifyAndPersistMessage(input: IncomingMessage): Promise<M
     serverTs: Date.now(),
   };
 
-  await getDb().messages.insertOne(doc);
+  try {
+    await getDb().messages.insertOne(doc);
+  } catch (err) {
+    if (isDuplicateKeyError(err)) throw new MessageRejected('Duplicate message (replay)');
+    throw err;
+  }
+
   return doc;
 }
 

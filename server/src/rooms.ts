@@ -5,6 +5,7 @@
 import { getDb } from './db.js';
 import { rsaDecryptToString } from './keys.js';
 import { AuthError } from './auth.js';
+import { isDuplicateKeyError } from './mongoErrors.js';
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
@@ -45,8 +46,20 @@ export async function createRoom(
   const existing = await db.rooms.findOne({ _id: roomId });
   if (existing) throw new AuthError(409, 'A room with this code already exists');
 
-  await db.rooms.insertOne({ _id: roomId, nameEnc, createdBy: username, createdAt: new Date() });
-  await db.memberships.insertOne({ roomId, username, joinedAt: new Date() });
+  // The findOne above is a fast path for a clean error message in the
+  // common case, but it's not atomic with the insert below - two
+  // concurrent creates for the same code can both pass it. Mongo's unique
+  // _id index is the actual source of truth; a duplicate-key error here
+  // just means we lost that race, which is exactly the same outcome as
+  // findOne finding it first, so it gets the same 409 rather than
+  // surfacing as an uncaught 500.
+  try {
+    await db.rooms.insertOne({ _id: roomId, nameEnc, createdBy: username, createdAt: new Date() });
+    await db.memberships.insertOne({ roomId, username, joinedAt: new Date() });
+  } catch (err) {
+    if (isDuplicateKeyError(err)) throw new AuthError(409, 'A room with this code already exists');
+    throw err;
+  }
 
   return { roomId };
 }
@@ -97,4 +110,20 @@ export async function listRooms(
 export async function isMember(username: string, roomId: string): Promise<boolean> {
   const membership = await getDb().memberships.findOne({ roomId, username });
   return membership !== null;
+}
+
+/**
+ * Whether two users are both members of at least one common room. Used to
+ * scope Ed25519 public-key lookups (GET /api/users/:username/key) so that
+ * holding any one account doesn't let you enumerate every registered
+ * username - you can only look up people you already share a room with,
+ * which you'd know about anyway.
+ */
+export async function sharesRoomWith(a: string, b: string): Promise<boolean> {
+  const db = getDb();
+  const aMemberships = await db.memberships.find({ username: a }).toArray();
+  if (aMemberships.length === 0) return false;
+  const roomIds = aMemberships.map((m) => m.roomId);
+  const overlap = await db.memberships.findOne({ username: b, roomId: { $in: roomIds } });
+  return overlap !== null;
 }

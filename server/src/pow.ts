@@ -1,38 +1,57 @@
-// Proof-of-work anti-bot gate. The server hands out a sha256(randomBytes)
-// challenge; the client must find a hex nonce such that
-// sha256(challenge + nonce) ends in `difficulty` zero hex digits, counting
-// up from 0 in hex. Each challenge is single-use and expires after
-// POW_TTL_MS. State is an in-memory Map: it does not survive a restart
-// (outstanding challenges are simply invalidated, and clients re-request)
-// and does not scale past one server instance - acceptable for this project.
-import { createHash, randomBytes } from 'node:crypto';
+// Proof-of-work anti-bot gate, stateless variant.
+//
+// A challenge is a self-describing, HMAC-authenticated string:
+//   `${op}.${expiresAtMs}.${randomHex}.${hmacHex}`
+// where hmacHex = HMAC-SHA256(secret, `${op}.${expiresAtMs}.${randomHex}`).
+// Issuing a challenge therefore stores NOTHING server-side - the server can
+// hand out an unlimited number of challenges for free without growing any
+// in-memory state. (The previous Map-based design stored every issued
+// challenge for 5 minutes regardless of whether it was ever solved: pulling
+// 20,000 challenges took ~4s and zero cost of the caller's own, an
+// unauthenticated memory-exhaustion vector against the anti-abuse mechanism
+// itself.)
+//
+// The client still just counts up in hex, appending its guess as a string
+// onto the whole opaque challenge, exactly as before - solving is unchanged
+// and needs no protocol update, only a longer opaque string.
+//
+// Single-use enforcement (so a captured *valid* solution can't be replayed)
+// only records challenges that were actually, successfully solved - i.e.
+// memory use is bounded by real attacker CPU work, not by how many
+// challenges they merely requested. That's what makes it self-limiting by
+// construction rather than needing a separate cap.
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { POW_TTL_MS } from './config.js';
 
-export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history';
+export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history' | 'userKey';
 
-// Rough expected work at 16^d hashes; sendMessage difficulty is kept low
-// because the client is expected to pre-solve it against the ack of the
-// previous message so sending never blocks on a round trip (see ws/hub.ts).
+// Rough expected work at 16^d hashes. sendMessage/history/userKey are kept
+// low so interactive actions don't feel throttled - see ws/hub.ts and
+// ratelimit.ts for the *volume* limits PoW difficulty alone can't provide.
 export const POW_DIFFICULTY: Record<PowOp, number> = {
-  register: 4,
-  createRoom: 4,
+  register: 5,
+  createRoom: 5,
   login: 4,
-  joinRoom: 3,
-  sendMessage: 2,
-  history: 1,
+  joinRoom: 4,
+  sendMessage: 3,
+  history: 2,
+  userKey: 2,
 };
 
-interface ChallengeEntry {
-  op: PowOp;
-  difficulty: number;
-  expiresAt: number;
-  used: boolean;
-}
-
-const challenges = new Map<string, ChallengeEntry>();
+// Generated fresh at boot, in memory only, never persisted. A restart
+// invalidates every outstanding challenge - clients transparently
+// re-request, same externally-visible behavior as before - and just as
+// importantly resets the burned set consistently with it, so there's never
+// a window where a challenge solved under a since-rotated secret could
+// still be replayed.
+const HMAC_SECRET = randomBytes(32);
 
 export function sha256Hex(input: string | Buffer): string {
   return createHash('sha256').update(input).digest('hex');
+}
+
+function hmacFor(op: string, expiresAt: string, random: string): string {
+  return createHmac('sha256', HMAC_SECRET).update(`${op}.${expiresAt}.${random}`).digest('hex');
 }
 
 export interface IssuedChallenge {
@@ -42,11 +61,10 @@ export interface IssuedChallenge {
 }
 
 export function issueChallenge(op: PowOp): IssuedChallenge {
-  const challenge = sha256Hex(randomBytes(32));
-  const difficulty = POW_DIFFICULTY[op];
   const expiresAt = Date.now() + POW_TTL_MS;
-  challenges.set(challenge, { op, difficulty, expiresAt, used: false });
-  return { challenge, difficulty, expiresAt };
+  const random = randomBytes(16).toString('hex');
+  const hmac = hmacFor(op, String(expiresAt), random);
+  return { challenge: `${op}.${expiresAt}.${random}.${hmac}`, difficulty: POW_DIFFICULTY[op], expiresAt };
 }
 
 export interface PowSubmission {
@@ -54,32 +72,64 @@ export interface PowSubmission {
   nonce: string;
 }
 
+// Only ever holds challenges that were actually, successfully solved -
+// bounded by real PoW work performed, not by how many were merely issued.
+const burned = new Set<string>();
+
+interface ParsedChallenge {
+  op: string;
+  expiresAt: number;
+  random: string;
+  hmac: string;
+}
+
+function parseChallenge(challenge: string): ParsedChallenge | null {
+  const parts = challenge.split('.');
+  if (parts.length !== 4) return null;
+  const [op, expiresAtStr, random, hmac] = parts;
+  const expiresAt = Number(expiresAtStr);
+  if (!op || !random || !hmac || !Number.isFinite(expiresAt)) return null;
+  return { op, expiresAt, random, hmac };
+}
+
 /**
- * Verifies a solved challenge for the given operation and burns it so it
- * can never be reused (replay-proof), regardless of pass/fail.
+ * Verifies a solved challenge for the given operation. Only a genuinely
+ * valid solution is ever recorded (burned) for replay protection - an
+ * invalid-nonce attempt leaves no trace, since the challenge itself carries
+ * no server-side state until it's actually solved.
  */
 export function verifyAndBurn(op: PowOp, submission: PowSubmission | undefined | null): boolean {
   if (!submission || !submission.challenge || !submission.nonce) return false;
-  const entry = challenges.get(submission.challenge);
-  if (!entry) return false;
 
-  // Single-use: remove immediately so a captured valid solution cannot be
-  // replayed even if verification below fails for an unrelated reason.
-  challenges.delete(submission.challenge);
+  const parsed = parseChallenge(submission.challenge);
+  if (!parsed) return false;
 
-  if (entry.used) return false;
-  if (entry.op !== op) return false;
-  if (Date.now() > entry.expiresAt) return false;
+  // Reject anything tampered with or simply made up, before trusting any
+  // of its fields (op, expiry) for the checks below.
+  const expected = Buffer.from(hmacFor(parsed.op, String(parsed.expiresAt), parsed.random), 'hex');
+  const actual = Buffer.from(parsed.hmac, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return false;
+
+  if (parsed.op !== op) return false;
+  if (Date.now() > parsed.expiresAt) return false;
 
   const digest = sha256Hex(submission.challenge + submission.nonce);
-  return digest.endsWith('0'.repeat(entry.difficulty));
+  if (!digest.endsWith('0'.repeat(POW_DIFFICULTY[op]))) return false;
+
+  if (burned.has(submission.challenge)) return false; // already spent
+  burned.add(submission.challenge);
+  return true;
 }
 
-// Periodic sweep of expired-but-unused challenges to bound memory growth.
+// Periodic sweep: once a challenge's own embedded expiry has passed it
+// could never be legitimately resubmitted anyway, so it's always safe to
+// drop from the burned set at that point. Bounds its size to "however many
+// challenges were actually solved within one TTL window."
 const sweepInterval = setInterval(() => {
   const now = Date.now();
-  for (const [key, entry] of challenges) {
-    if (now > entry.expiresAt) challenges.delete(key);
+  for (const challenge of burned) {
+    const parsed = parseChallenge(challenge);
+    if (!parsed || now > parsed.expiresAt) burned.delete(challenge);
   }
 }, POW_TTL_MS);
 sweepInterval.unref();
