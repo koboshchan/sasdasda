@@ -18,9 +18,25 @@ function el<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
 }
 
+const CODE_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const CODE_LENGTH = 10;
+
+/**
+ * Generates a random 10-char [A-Za-z0-9] code. Uses rejection sampling
+ * (discarding bytes >= the largest multiple of 62 below 256) rather than a
+ * plain modulo, so every character stays uniformly distributed instead of
+ * slightly favoring the low end of the charset.
+ */
 function randomCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const maxValid = 256 - (256 % CODE_CHARSET.length);
+  let result = '';
+  while (result.length < CODE_LENGTH) {
+    const batch = crypto.getRandomValues(new Uint8Array(CODE_LENGTH - result.length));
+    for (const b of batch) {
+      if (b < maxValid) result += CODE_CHARSET[b % CODE_CHARSET.length];
+    }
+  }
+  return result;
 }
 
 export function wireRoomsScreen(onOpenRoom: (room: StoredRoom) => void): void {
