@@ -2,3 +2,13 @@ node_modules
 .DS_Store
 .env.local
 .env
+
+# build output
+client/dist
+
+# server persisted state (RSA keys) - must survive rebuilds, never committed
+server/data/keys/*
+!server/data/keys/.gitkeep
+
+# TypeScript build info
+*.tsbuildinfo

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureCord // Private Group</title>
+    <style>
+        :root {
+            --bg-dark: #313338;
+            --bg-sidebar: #2b2d31;
+            --bg-chat: #313338;
+            --bg-input: #383a40;
+            --accent: #5865f2;
+            --accent-hover: #4752c4;
+            --text-main: #dbdee1;
+            --text-muted: #949ba4;
+            --danger: #ed4245;
+            --warning: #f0b232;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; overflow: hidden; }
+
+        /* Fullscreen Gate / Auth Screens */
+        .auth-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .auth-card {
+            background: #2b2d31; padding: 30px; border-radius: 8px; width: 100%; max-width: 420px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5); text-align: center;
+        }
+        .auth-card h2 { color: #fff; margin-bottom: 20px; font-size: 1.4rem; }
+        .input-field {
+            width: 100%; padding: 10px; margin-bottom: 15px; background: var(--bg-dark);
+            border: 1px solid #1f2023; border-radius: 4px; color: #fff; font-size: 1rem;
+        }
+        .input-field:focus { outline: none; border-color: var(--accent); }
+        .btn {
+            width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none;
+            border-radius: 4px; font-weight: bold; cursor: pointer; transition: background 0.2s;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-secondary { background: var(--bg-input); }
+        .btn-secondary:hover { background: #45474e; }
+        .switch-text { margin-top: 15px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; }
+        .switch-text span { color: var(--accent); }
+        .error-text { color: var(--danger); font-size: 0.8rem; margin-top: 10px; display: none; }
+        .hint-text { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 15px; text-align: left; }
+
+        .pow-progress { display: none; margin-top: 12px; }
+        .pow-progress-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; text-align: left; }
+        .pow-progress-track { width: 100%; height: 6px; background: var(--bg-dark); border-radius: 3px; overflow: hidden; }
+        .pow-progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s; }
+
+        /* Rooms screen */
+        .rooms-card { max-width: 480px; }
+        .rooms-list { list-style: none; text-align: left; margin-bottom: 15px; max-height: 240px; overflow-y: auto; }
+        .rooms-list li { padding: 10px 12px; border-radius: 4px; margin-bottom: 6px; background: var(--bg-dark); color: #fff; cursor: pointer; }
+        .rooms-list li:hover { background: rgba(255,255,255,0.08); }
+        .rooms-empty { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 15px; }
+        .divider { border-top: 1px solid #1f2023; margin: 18px 0; }
+        .row { display: flex; gap: 8px; }
+        .row .input-field { flex: 1; margin-bottom: 0; }
+        .code-reveal { font-family: monospace; background: var(--bg-dark); padding: 8px; border-radius: 4px; margin-top: 10px; word-break: break-all; display: none; }
+
+        /* Discord Layout (Hidden until logged in) */
+        #app-container { display: none; width: 100%; height: 100%; }
+        .sidebar { width: 240px; background: var(--bg-sidebar); display: flex; flex-direction: column; border-right: 1px solid #1f2023; }
+        .sidebar-header { padding: 20px; font-weight: bold; border-bottom: 2px solid var(--bg-dark); color: #fff; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+        .channel-list { padding: 10px; flex-grow: 1; overflow-y: auto; }
+        .channel { padding: 8px 12px; border-radius: 4px; color: var(--text-muted); cursor: pointer; margin-bottom: 4px; }
+        .channel.active, .channel:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+        .identity-panel { padding: 10px; border-top: 1px solid #1f2023; font-size: 0.75rem; color: var(--text-muted); }
+        .identity-panel .fp { font-family: monospace; color: var(--text-main); word-break: break-all; margin: 4px 0 8px; }
+        .identity-actions { display: flex; gap: 6px; }
+        .identity-actions button { flex: 1; font-size: 0.7rem; padding: 5px; background: var(--bg-input); border: none; color: var(--text-main); border-radius: 3px; cursor: pointer; }
+        .identity-actions button:hover { background: #45474e; }
+
+        .user-panel { padding: 10px; background: #232428; display: flex; justify-content: space-between; align-items: center; }
+        .username-display { font-size: 0.9rem; font-weight: bold; color: #fff; }
+        .logout-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; }
+        .logout-btn:hover { color: var(--danger); }
+
+        .chat-area { flex-grow: 1; display: flex; flex-direction: column; background: var(--bg-chat); height: 100%; }
+        .chat-header { padding: 20px; border-bottom: 1px solid #1f2023; font-weight: bold; color: #fff; }
+        .messages-box { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .message { display: flex; flex-direction: column; }
+        .message-user { font-weight: bold; font-size: 0.9rem; color: #fff; margin-bottom: 2px; }
+        .message-text { font-size: 0.95rem; color: var(--text-main); line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+        .message.invalid-sig .message-text { color: var(--danger); font-style: italic; }
+        .message.invalid-sig .message-user::after { content: " (INVALID SIGNATURE)"; color: var(--danger); font-weight: normal; font-size: 0.75rem; }
+        .message.pending .message-text { opacity: 0.6; }
+
+        .key-warning-banner {
+            background: var(--danger); color: #fff; padding: 10px 20px; font-size: 0.85rem; display: none;
+        }
+
+        .chat-input-area { padding: 20px; }
+        .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
+        .chat-input { width: 100%; background: transparent; border: none; color: #fff; font-size: 1rem; }
+        .chat-input:focus { outline: none; }
+    </style>
+</head>
+<body>
+
+    <!-- STEP 1: SIGN UP / LOGIN SCREEN -->
+    <div id="auth-screen" class="auth-container">
+        <div class="auth-card">
+            <h2 id="auth-title">Create Account</h2>
+            <input type="text" id="username-input" class="input-field" placeholder="Choose a Username" autocomplete="username">
+            <input type="password" id="password-input" class="input-field" placeholder="Choose a Password" autocomplete="new-password">
+            <button class="btn" id="auth-btn">Sign Up</button>
+            <div id="auth-pow-progress" class="pow-progress">
+                <div class="pow-progress-label" id="auth-pow-label">Verifying...</div>
+                <div class="pow-progress-track"><div class="pow-progress-fill" id="auth-pow-fill"></div></div>
+            </div>
+            <div id="auth-error" class="error-text"></div>
+            <div class="switch-text" id="auth-switch">
+                <span id="switch-txt-btn">Already have an account? Log in</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- STEP 2: ROOMS SCREEN -->
+    <div id="rooms-screen" class="auth-container" style="display: none;">
+        <div class="auth-card rooms-card">
+            <h2>Your Rooms</h2>
+            <ul id="rooms-list" class="rooms-list"></ul>
+            <div id="rooms-empty" class="rooms-empty" style="display:none;">No rooms yet - create one or join with a code.</div>
+
+            <div class="divider"></div>
+
+            <div class="hint-text">Create a new room. Give the code only to people you trust - it is the encryption key.</div>
+            <div class="row">
+                <input type="text" id="create-room-name" class="input-field" placeholder="Room name">
+            </div>
+            <div class="row" style="margin-top:8px;">
+                <input type="text" id="create-room-code" class="input-field" placeholder="Leave blank to generate a code">
+                <button class="btn" id="create-room-btn" style="width:auto; white-space:nowrap;">Create</button>
+            </div>
+            <div id="create-room-reveal" class="code-reveal"></div>
+
+            <div class="divider"></div>
+
+            <div class="row">
+                <input type="text" id="join-room-code" class="input-field" placeholder="Secret room code">
+                <button class="btn" id="join-room-btn" style="width:auto; white-space:nowrap;">Join</button>
+            </div>
+
+            <div id="rooms-pow-progress" class="pow-progress">
+                <div class="pow-progress-label" id="rooms-pow-label">Verifying...</div>
+                <div class="pow-progress-track"><div class="pow-progress-fill" id="rooms-pow-fill"></div></div>
+            </div>
+            <div id="rooms-error" class="error-text"></div>
+
+            <div class="divider"></div>
+            <button class="btn btn-secondary" id="rooms-logout-btn">Log Out</button>
+        </div>
+    </div>
+
+    <!-- STEP 3: MAIN CHAT INTERFACE -->
+    <div id="app-container">
+        <div class="sidebar">
+            <div class="sidebar-header" id="back-to-rooms">
+                <span>SecureCord</span>
+                <span style="font-size:0.75rem; color: var(--text-muted);">&larr; rooms</span>
+            </div>
+            <div class="channel-list" id="channel-list"></div>
+            <div class="identity-panel">
+                <div>Your identity fingerprint:</div>
+                <div class="fp" id="identity-fingerprint">-</div>
+                <div class="identity-actions">
+                    <button id="export-identity-btn">Export</button>
+                    <button id="import-identity-btn">Import</button>
+                    <input type="file" id="import-identity-file" accept="application/json" style="display:none;">
+                </div>
+            </div>
+            <div class="user-panel">
+                <div id="logged-user-display" class="username-display">User</div>
+                <button class="logout-btn" id="chat-logout-btn">Log Out</button>
+            </div>
+        </div>
+        <div class="chat-area">
+            <div class="chat-header" id="chat-header"># room</div>
+            <div id="key-warning-banner" class="key-warning-banner"></div>
+            <div id="messages-box" class="messages-box"></div>
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <input type="text" id="message-input" class="chat-input" placeholder="Message">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="bundle.js"></script>
+</body>
+</html>

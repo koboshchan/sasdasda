@@ -1,0 +1,40 @@
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - internal
+    # Intentionally no `ports:` mapping and no auth configured.
+    # Mongo is reachable only from other containers on the `internal`
+    # network, by the Compose DNS name `mongo` - never from the host.
+
+  server:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongodb://mongo:27017/securecord
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      # RSA keypair must persist across image rebuilds/restarts.
+      - ./server/data:/app/data
+      # client/dist contains both index.html and bundle.js after
+      # `npm run build` (or the --watch dev loop) in client/. Served
+      # statically by the Express server - run that build before `up`.
+      - ./client/dist:/app/public:ro
+      # Live-reload the server source; the image's CMD runs it via
+      # `tsx watch`, so edits here take effect without a rebuild.
+      - ./server/src:/app/src:ro
+    networks:
+      - internal
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:
+
+networks:
+  internal:

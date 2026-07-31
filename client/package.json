@@ -1,0 +1,15 @@
+{
+  "name": "securecord-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}

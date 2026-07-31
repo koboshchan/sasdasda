@@ -1,0 +1,24 @@
+{
+  "name": "securecord-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^4.21.1",
+    "mongodb": "^6.10.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
