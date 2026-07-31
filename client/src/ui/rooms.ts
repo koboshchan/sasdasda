@@ -13,6 +13,7 @@ import * as api from '../net/rest.js';
 import { putRoom, listRoomsLocal, type StoredRoom } from '../store/vault.js';
 import { bindPowProgress } from './pow-progress.js';
 import { showChatScreen } from './screens.js';
+import { state } from '../state.js';
 
 function el<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
@@ -63,7 +64,8 @@ export function wireRoomsScreen(onOpenRoom: (room: StoredRoom) => void): void {
   }
 
   async function refresh(): Promise<void> {
-    localRooms = await listRoomsLocal();
+    if (!state.username) return;
+    localRooms = await listRoomsLocal(state.username);
     let serverCount = 0;
     try {
       const { rooms } = await api.listRooms();
@@ -121,7 +123,7 @@ export function wireRoomsScreen(onOpenRoom: (room: StoredRoom) => void): void {
       const roomIdEnc = await rsaEncryptString(h2);
 
       const { roomId } = await api.createRoom(roomIdEnc, nameEnc, progress.onProgress);
-      await putRoom({ roomId, name, h1 });
+      await putRoom({ roomId, name, h1, owner: state.username! });
 
       nameInput.value = '';
       codeInput.value = '';
@@ -165,7 +167,7 @@ export function wireRoomsScreen(onOpenRoom: (room: StoredRoom) => void): void {
         return;
       }
 
-      await putRoom({ roomId, name, h1 });
+      await putRoom({ roomId, name, h1, owner: state.username! });
       joinCodeInput.value = '';
       await refresh();
     } catch (err) {

@@ -5,16 +5,29 @@
 // (H2, RSA-wrapped hashes, signatures) that the rest of the app computes
 // from it.
 const DB_NAME = 'securecord';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (ev) => {
       const db = req.result;
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
-      if (!db.objectStoreNames.contains('rooms')) db.createObjectStore('rooms', { keyPath: 'roomId' });
       if (!db.objectStoreNames.contains('peers')) db.createObjectStore('peers', { keyPath: 'username' });
+
+      // v1 -> v2: rooms are now keyed by [owner, roomId] instead of just
+      // roomId, so that logging into a different account on this same
+      // browser never surfaces rooms cached under a previous account (a
+      // v1 database keyed by roomId alone had no such scoping). This is a
+      // one-time reset of the local room cache - the server-side room
+      // membership is untouched, and rejoining with the room's code
+      // restores it.
+      if (ev.oldVersion < 2 && db.objectStoreNames.contains('rooms')) {
+        db.deleteObjectStore('rooms');
+      }
+      if (!db.objectStoreNames.contains('rooms')) {
+        db.createObjectStore('rooms', { keyPath: ['owner', 'roomId'] });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -66,9 +79,15 @@ export const setSession = (session: StoredSession) => setKv('session', session);
 export const clearSession = () => deleteKv('session');
 
 // --- Rooms: the secret code and derived H1 (the AES key) never leave here ---
+//
+// Keyed by [owner, roomId] (owner = the local username that created/joined
+// it) rather than roomId alone, so that logging out and into a different
+// account on the same device never shows the previous account's rooms -
+// each account only ever sees rows it stored itself.
 
 export interface StoredRoom {
   roomId: string; // H2
+  owner: string; // the local username this room entry belongs to
   name: string; // decrypted display name
   h1: string; // sha256(code) hex - the AES-256 key, LOCAL ONLY
 }
@@ -78,14 +97,10 @@ export async function putRoom(room: StoredRoom): Promise<void> {
   await tx(db, 'rooms', 'readwrite', (os) => os.put(room));
 }
 
-export async function getRoom(roomId: string): Promise<StoredRoom | undefined> {
+export async function listRoomsLocal(owner: string): Promise<StoredRoom[]> {
   const db = await openDb();
-  return tx<StoredRoom | undefined>(db, 'rooms', 'readonly', (os) => os.get(roomId));
-}
-
-export async function listRoomsLocal(): Promise<StoredRoom[]> {
-  const db = await openDb();
-  return tx<StoredRoom[]>(db, 'rooms', 'readonly', (os) => os.getAll());
+  const all = await tx<StoredRoom[]>(db, 'rooms', 'readonly', (os) => os.getAll());
+  return all.filter((room) => room.owner === owner);
 }
 
 // --- Peers: trust-on-first-use pinning of Ed25519 public keys ---

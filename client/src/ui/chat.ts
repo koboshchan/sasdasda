@@ -81,7 +81,7 @@ export function wireChatScreen(): ChatController {
   }
 
   async function renderChannelList(activeRoomId: string): Promise<void> {
-    const rooms = await listRoomsLocal();
+    const rooms = state.username ? await listRoomsLocal(state.username) : [];
     channelList.innerHTML = '';
     for (const room of rooms) {
       const div = document.createElement('div');
