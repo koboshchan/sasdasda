@@ -1,22 +1,18 @@
 // WebSocket hub: one live-message channel per authenticated connection,
 // fanning out to every socket subscribed to a room. Every accept path is
-// checked in order - session, membership, rate limit, proof-of-work,
-// signature - and the first failure short-circuits with an `error` frame;
-// nothing partial is ever persisted or broadcast. See messages.ts for the
-// signature step, pow.ts for the anti-bot step, and ratelimit.ts for the
-// anti-flood step (PoW at sendMessage's difficulty is intentionally cheap
-// so sending doesn't feel throttled - it alone doesn't bound volume).
+// checked in order - session, membership, proof-of-work, signature - and
+// the first failure short-circuits with an `error` frame; nothing partial
+// is ever persisted or broadcast. See messages.ts for the signature step
+// and pow.ts for the anti-bot step. A solved proof-of-work is the only
+// admission control on sending - there is deliberately no separate
+// per-user volume cap, so a client that keeps solving challenges (at
+// sendMessage's difficulty) can keep sending. See README threat model.
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { resolveSession } from '../auth.js';
 import { isMember } from '../rooms.js';
 import { issueChallenge, verifyAndBurn, type PowSubmission } from '../pow.js';
 import { verifyAndPersistMessage, MessageRejected } from '../messages.js';
-import { take } from '../ratelimit.js';
-
-// 15-message burst, sustained 5/sec thereafter, per authenticated user.
-const SEND_RATE_CAPACITY = 15;
-const SEND_RATE_PER_SEC = 5;
 
 interface ClientState {
   username: string;
@@ -82,13 +78,6 @@ async function handleSend(ws: WebSocket, state: ClientState, frame: InboundFrame
 
   const member = await isMember(state.username, roomId);
   if (!member) return sendError(ws, 'forbidden', 'Not a member of this room');
-
-  // Checked before spending the PoW solution, so a rate-limited request
-  // doesn't burn a challenge the user already solved - they can just retry
-  // once their bucket refills, with the same solved (challenge, nonce).
-  if (!take(`send:${state.username}`, SEND_RATE_CAPACITY, SEND_RATE_PER_SEC)) {
-    return sendError(ws, 'rate_limited', 'Sending too fast - slow down and try again shortly');
-  }
 
   if (!verifyAndBurn('sendMessage', frame.pow)) {
     return sendError(ws, 'pow_failed', 'Proof of work missing, invalid, or already used');

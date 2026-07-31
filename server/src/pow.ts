@@ -26,8 +26,9 @@ import { POW_TTL_MS } from './config.js';
 export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history' | 'userKey';
 
 // Rough expected work at 16^d hashes. sendMessage/history/userKey are kept
-// low so interactive actions don't feel throttled - see ws/hub.ts and
-// ratelimit.ts for the *volume* limits PoW difficulty alone can't provide.
+// low so interactive actions don't feel throttled - a solved challenge is
+// the only admission control on these endpoints; there is deliberately no
+// separate volume/rate cap (see README threat model).
 export const POW_DIFFICULTY: Record<PowOp, number> = {
   register: 5,
   createRoom: 5,

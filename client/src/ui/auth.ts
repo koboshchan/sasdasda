@@ -2,16 +2,21 @@
 //
 // Sign up: password is hashed once locally (PH = sha256(password)), sent to
 // the server RSA-wrapped so it's never on the wire in the clear, alongside
-// this device's Ed25519 public key.
+// this device's Ed25519 public key - which is itself derived from the same
+// password (see crypto/identity.ts::deriveIdentity), so there's nothing to
+// export/import to use this account from a new device.
 //
 // Log in: server issues a single-use salt; client computes
 // proof = sha256(PH + salt) and sends only that - the password and PH never
-// leave the device after registration.
+// leave the device after registration. The identity is re-derived from the
+// password on every login and persisted locally (per-account) so a resumed
+// session doesn't need it again - see store/vault.ts::setIdentitySeed and
+// main.ts's session-resume path.
 import { sha256Hex } from '../crypto/hash.js';
 import { rsaEncryptString } from '../crypto/rsa.js';
-import { exportPublicKeyRaw } from '../crypto/identity.js';
+import { deriveIdentity, exportPublicKeyRaw, exportSeedB64 } from '../crypto/identity.js';
 import * as api from '../net/rest.js';
-import { setSession } from '../store/vault.js';
+import { setSession, setIdentitySeed } from '../store/vault.js';
 import { bindPowProgress } from './pow-progress.js';
 import { state } from '../state.js';
 
@@ -22,7 +27,6 @@ function el<T extends HTMLElement>(id: string): T {
 export interface AuthResult {
   username: string;
   token: string;
-  registeredEdPubB64: string;
 }
 
 export function wireAuthScreen(onLoggedIn: (result: AuthResult) => void): void {
@@ -62,29 +66,34 @@ export function wireAuthScreen(onLoggedIn: (result: AuthResult) => void): void {
       errorEl.style.display = 'block';
       return;
     }
-    if (!state.identity) {
-      errorEl.textContent = 'Local identity not ready yet - try again in a moment.';
-      errorEl.style.display = 'block';
-      return;
-    }
 
     authBtn.disabled = true;
     progress.show();
     try {
+      // Derived up front, but only committed to state/storage once the
+      // server has actually accepted the request below - a wrong password
+      // during login fails on the server's proof check first, so a bad
+      // guess never overwrites a good identity already in memory.
+      const identity = await deriveIdentity(password);
+
       if (!isLoginMode) {
         const ph = await sha256Hex(password);
         const phEnc = await rsaEncryptString(ph);
-        const edPubB64 = await exportPublicKeyRaw(state.identity.publicKey);
+        const edPubB64 = exportPublicKeyRaw(identity.publicKey);
         await api.register(username, phEnc, edPubB64, progress.onProgress);
+        state.identity = identity;
+        await setIdentitySeed(username, exportSeedB64(identity));
         setMode(true, 'Account created! You can now log in.');
         errorEl.style.color = 'var(--text-muted)';
       } else {
         const { salt } = await api.loginChallenge(username, progress.onProgress);
         const ph = await sha256Hex(password);
         const proof = await sha256Hex(ph + salt);
-        const { token, expiresAt, edPubB64 } = await api.login(username, salt, proof, progress.onProgress);
+        const { token, expiresAt } = await api.login(username, salt, proof, progress.onProgress);
+        state.identity = identity;
+        await setIdentitySeed(username, exportSeedB64(identity));
         await setSession({ token, username, expiresAt });
-        onLoggedIn({ username, token, registeredEdPubB64: edPubB64 });
+        onLoggedIn({ username, token });
       }
     } catch (err) {
       errorEl.style.color = 'var(--danger)';

@@ -75,9 +75,6 @@
 
         .identity-panel { padding: 10px; border-top: 1px solid #1f2023; font-size: 0.75rem; color: var(--text-muted); }
         .identity-panel .fp { font-family: monospace; color: var(--text-main); word-break: break-all; margin: 4px 0 8px; }
-        .identity-actions { display: flex; gap: 6px; }
-        .identity-actions button { flex: 1; font-size: 0.7rem; padding: 5px; background: var(--bg-input); border: none; color: var(--text-main); border-radius: 3px; cursor: pointer; }
-        .identity-actions button:hover { background: #45474e; }
 
         .user-panel { padding: 10px; background: #232428; display: flex; justify-content: space-between; align-items: center; }
         .username-display { font-size: 0.9rem; font-weight: bold; color: #fff; }
@@ -93,10 +90,6 @@
         .message.invalid-sig .message-text { color: var(--danger); font-style: italic; }
         .message.invalid-sig .message-user::after { content: " (INVALID SIGNATURE)"; color: var(--danger); font-weight: normal; font-size: 0.75rem; }
         .message.pending .message-text { opacity: 0.6; }
-
-        .key-warning-banner {
-            background: var(--danger); color: #fff; padding: 10px 20px; font-size: 0.85rem; display: none;
-        }
 
         .chat-input-area { padding: 20px; }
         .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
@@ -172,11 +165,6 @@
             <div class="identity-panel">
                 <div>Your identity fingerprint:</div>
                 <div class="fp" id="identity-fingerprint">-</div>
-                <div class="identity-actions">
-                    <button id="export-identity-btn">Export</button>
-                    <button id="import-identity-btn">Import</button>
-                    <input type="file" id="import-identity-file" accept="application/json" style="display:none;">
-                </div>
             </div>
             <div class="user-panel">
                 <div id="logged-user-display" class="username-display">User</div>
@@ -185,7 +173,6 @@
         </div>
         <div class="chat-area">
             <div class="chat-header" id="chat-header"># room</div>
-            <div id="key-warning-banner" class="key-warning-banner"></div>
             <div id="messages-box" class="messages-box"></div>
             <div class="chat-input-area">
                 <div class="chat-input-wrapper">

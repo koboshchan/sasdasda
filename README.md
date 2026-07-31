@@ -14,26 +14,26 @@ before treating this as a security boundary for anything that matters.
 docker compose up --build
 ```
 
-This starts two containers on an internal-only Docker network:
+That's the whole setup - there is no separate client build step. This
+builds a prod image (see the root `Dockerfile`: a `client-builder` stage
+bundles `client/` with esbuild, a `server-builder` stage bundles `server/`
+into a single dependency-free `dist/server.cjs` with esbuild, and a `runner`
+stage ships only those two build outputs - no TypeScript source, no
+`node_modules`, no `npx`/`tsx` in the running container) and starts two
+containers on an internal-only Docker network:
 
 - **`mongo`** - no auth, no published port. It is reachable only from the
   `server` container, by the Compose DNS name `mongo`. It is never reachable
   from the host (`nc -vz localhost 27017` will fail).
 - **`server`** - Express + `ws` on `:8080` (published to the host), serving
-  the built client from `client/dist` and the REST/WS API from the same
-  origin. On first boot it generates a 4096-bit RSA keypair under
-  `server/data/keys/` (bind-mounted, so it survives rebuilds).
+  the bundled client and the REST/WS API from the same origin. On first
+  boot it generates a 4096-bit RSA keypair under `server/data/keys/`
+  (bind-mounted - the only volume left, since the client bundle and server
+  code are now baked into the image - so the keypair survives rebuilds).
 
-Before the first `up`, build the client once (the server serves whatever is
-in `client/dist`):
-
-```bash
-cd client && npm install && npm run build
-```
-
-For local development, `npm run dev` in `client/` runs an esbuild `--watch`
-loop; the server container runs `tsx watch` against a bind-mounted
-`server/src`, so both sides live-reload.
+For local development instead of the prod image, `npm run dev` in
+`client/` runs an esbuild `--watch` loop, and `npm run dev` in `server/`
+runs `tsx watch` directly against the TypeScript source.
 
 ## How a message actually gets from A to B
 
@@ -49,7 +49,17 @@ loop; the server container runs `tsx watch` against a bind-mounted
    hands out a single-use `salt`, and the client sends
    `proof = sha256(PH + salt)` - the password and `PH` are never transmitted
    again.
-3. **Every message is Ed25519-signed** over the canonical string
+3. **The Ed25519 signing identity is derived from the same password**,
+   not generated randomly: `seed = sha256("sc-ed25519-v1|" + password)` is
+   the Ed25519 secret key (see `client/src/crypto/identity.ts::deriveIdentity`).
+   This is deliberately *not* derived from `PH` - the server stores `PH`, so
+   seeding from it would let a compromised server derive every user's
+   private signing key straight out of its own database. Seeding from the
+   raw password instead (which the server never sees) means the same
+   account produces the identical keypair on any device from the password
+   alone - there's no export/import step, and nothing at all to synchronize
+   between devices.
+4. **Every message is Ed25519-signed** over the canonical string
    `roomId|sender|ts|iv|ct`, where `iv`/`ct` are the AES-GCM nonce and
    ciphertext. The server verifies this against the sender's registered
    public key and refuses to store or broadcast anything unsigned or
@@ -60,19 +70,32 @@ loop; the server container runs `tsx watch` against a bind-mounted
    insert instead of quietly becoming a duplicate; a claimed timestamp more
    than 5 minutes from the server's clock is rejected outright (see
    `server/src/messages.ts`).
-4. **Proof-of-work gates every write-ish endpoint** (register, login,
-   create/join room, send message, fetch history, user-key lookup) with an
-   escalating-difficulty sha256 puzzle - the server hands out a
+5. **Proof-of-work is the only admission control**, not just an anti-bot
+   speed bump alongside a rate limit - every write-ish endpoint (register,
+   login, create/join room, send message, fetch history, user-key lookup)
+   requires an escalating-difficulty sha256 puzzle, and a solved challenge
+   is treated as sufficient approval on its own. The server hands out a
    self-describing, HMAC-authenticated challenge (nothing is stored until
    it's actually solved, so issuing challenges for free costs an attacker's
    memory nothing), the client counts up in hex appending the counter as a
    string until the digest ends in `difficulty` zero hex digits, and each
-   solved challenge is burned after one use (see `server/src/pow.ts`). PoW
-   makes each request cost something (anti-*bot*); it deliberately isn't
-   expensive enough at interactive difficulties to bound sustained *volume*
-   from an already-authenticated account, so a token-bucket rate limit sits
-   alongside it for that (15-message burst / 5 sustained per second on
-   sending - see `server/src/ratelimit.ts`).
+   solved challenge is burned after one use (see `server/src/pow.ts`).
+   There is deliberately no separate token-bucket/volume limiter on top of
+   this - see the threat model below for what that trades away.
+
+## Message history & rendering
+
+Opening a room fetches the newest 100 messages; scrolling toward the top of
+the visible history requests 100 more (via `GET
+/api/rooms/:roomId/messages?before=...`, still gated by its own PoW
+challenge), and scrolling back down re-reveals previously-loaded messages
+from memory rather than re-fetching them. The DOM never holds more than 500
+rendered messages at once - crossing that ceiling trims back down to 400,
+discarding whichever end (oldest or newest) is furthest from the current
+scroll position. Verifying a signature and decrypting a message both happen
+at most once per message, cached for as long as it stays in memory, even as
+it's repeatedly trimmed from and re-added to the DOM (see
+`client/src/ui/chat.ts`).
 
 ## Threat model & limitations
 
@@ -93,7 +116,10 @@ This is deliberately honest about what it does *not* protect against:
    starts after the first legitimate contact; it does not defeat a server
    that's malicious from that very first sighting. There is no
    out-of-band identity verification UI (e.g. comparing fingerprints over a
-   different channel) beyond showing the fingerprint in the sidebar.
+   different channel) beyond showing the fingerprint in the sidebar. This
+   risk is specifically about *other people's* keys - your own signing key
+   is never fetched from the server at all (see point 3 below), so there's
+   nothing for the server to substitute there.
 2. **The server stores your password hash, not just its challenge-response
    trace.** To verify `proof = sha256(PH + salt)` at login, the server must
    keep `PH = sha256(password)` around. That means a database compromise
@@ -104,7 +130,35 @@ This is deliberately honest about what it does *not* protect against:
    of scope here. The one thing this design does get right is that `PH`
    itself is never sent over the wire in the clear after registration (it's
    RSA-wrapped once, at signup) and the raw password is never sent at all
-   after that point.
+   after that point. Critically, `PH` is *not* what the Ed25519 signing key
+   is derived from (see point 3) - a `PH` leak lets an attacker log in as
+   you, but does not by itself let them forge your signature.
+3. **The Ed25519 identity is derived from the password, not stored
+   server-side or exported between devices.** Logging into the same account
+   from a new browser/device reproduces the identical keypair from the
+   password alone (see "How a message actually gets from A to B" above) -
+   there is no backup file to lose, and no "wrong keypair on this device"
+   state is reachable for an account logging in with its correct password.
+   The corollary is that **the password is now doing double duty as both
+   the login secret and the signing key seed**: anyone who obtains the
+   password can both log in *and* forge that user's future signatures
+   (whereas a leaked `PH` alone cannot). This is why the two are derived
+   with different domain-separated hashes rather than one being reused for
+   the other, even though that doesn't change the fact that both trace back
+   to the same underlying secret. A locally-persisted copy of the derived
+   seed (so a page reload doesn't need the password retyped) is deleted on
+   logout - see `client/src/store/vault.ts::deleteIdentitySeed` and
+   `client/src/main.ts::handleLogout`.
+4. **There is no rate limiting - a solved proof-of-work is the only
+   thing standing between an authenticated account and unlimited request
+   volume.** PoW difficulty is tuned low on `sendMessage` (and similarly
+   cheap ops) so legitimate use doesn't feel throttled, which means a
+   scripted client that keeps solving challenges can sustain a high message
+   rate from one account - PoW bounds cost-per-request (anti-*bot*), not
+   sustained *volume* (anti-flood), and this app deliberately does not
+   layer a separate volume cap on top of it. If you need to bound sustained
+   throughput from a single already-authenticated account, that's a gap to
+   close before relying on this for anything at scale.
 
 Other things worth knowing:
 
@@ -117,16 +171,6 @@ Other things worth knowing:
   `server/src/pow.ts`, `server/src/auth.ts`). A server restart simply
   invalidates outstanding challenges - clients transparently re-request one
   - but this does not scale past a single server instance.
-- **The Ed25519 identity is local-only and per-browser-profile.** It's
-  generated on first load and stored in IndexedDB; nothing about it is ever
-  transmitted except the public key at registration. If you log into the
-  same account from a new browser/device without importing the original
-  identity backup (sidebar → Export, then Import on the new device), that
-  new browser gets a *different* keypair than the one already registered
-  for the account, and every message it signs will be **rejected by the
-  server** as invalid until you import the correct backup. The app detects
-  this (comparing the login response's registered key against the local
-  one) and shows a banner rather than failing silently.
 - **Room membership is a wrong-code oracle otherwise, so it's deliberately
   vague.** `POST /api/rooms/join` returns an identical 404 for "no room
   with this code" and "this room doesn't exist at all" - if it distinguished
@@ -142,19 +186,19 @@ Other things worth knowing:
 ## Layout
 
 ```
+Dockerfile        multi-stage prod build: client-builder / server-builder / runner
+docker-compose.yml
 client/           esbuild + TypeScript, no framework
-  src/crypto/     sha256, RSA-OAEP, AES-GCM, Ed25519, PoW solver
+  src/crypto/     sha256, RSA-OAEP, AES-GCM, password-derived Ed25519, PoW solver
   src/net/        REST client, WebSocket client
-  src/store/      IndexedDB vault (identity, room keys, pinned peer keys, session)
-  src/ui/         screen controllers (auth, rooms, chat)
+  src/store/      IndexedDB vault (per-account identity seed, room keys, pinned peer keys, session)
+  src/ui/         screen controllers (auth, rooms, chat - windowed message rendering)
 server/           Express + ws + MongoDB
   src/keys.ts       RSA keypair, generated on first boot, persisted to server/data/keys
   src/pow.ts        stateless HMAC-authenticated proof-of-work challenges
-  src/ratelimit.ts  per-key token-bucket rate limiting (the anti-flood layer PoW isn't)
   src/auth.ts       register + challenge-response login
   src/rooms.ts      room create/join/list, sharesRoomWith()
   src/messages.ts   signature verification + persistence + replay rejection
   src/mongoErrors.ts shared Mongo duplicate-key detection
   src/ws/hub.ts     WebSocket fan-out
-docker-compose.yml
 ```

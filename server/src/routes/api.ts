@@ -12,11 +12,6 @@ import {
 import { createRoom, joinRoom, listRooms, isMember, sharesRoomWith } from '../rooms.js';
 import { getHistory } from '../messages.js';
 import { requireAuth, requirePow } from '../middleware.js';
-import { take } from '../ratelimit.js';
-
-// 30-lookup burst, sustained 10/sec thereafter, per authenticated user.
-const USERKEY_RATE_CAPACITY = 30;
-const USERKEY_RATE_PER_SEC = 10;
 
 export const apiRouter = Router();
 
@@ -109,10 +104,6 @@ apiRouter.get('/users/:username/key', requireAuth, async (req, res) => {
     res.status(403).json({ error: 'Proof of work missing, invalid, or already used' });
     return;
   }
-  if (!take(`userKey:${requester}`, USERKEY_RATE_CAPACITY, USERKEY_RATE_PER_SEC)) {
-    res.status(429).json({ error: 'Too many key lookups - slow down and try again shortly' });
-    return;
-  }
 
   // Self-lookup is always allowed (client/src/main.ts checks its own
   // identity against the account's registered key on session resume).
@@ -186,6 +177,11 @@ apiRouter.get('/rooms/:roomId/messages', requireAuth, async (req: Request, res: 
 
   const before = req.query.before ? Number(req.query.before) : undefined;
   const limit = req.query.limit ? Number(req.query.limit) : 50;
-  const messages = await getHistory(roomId!, before, limit);
+  const docs = await getHistory(roomId!, before, limit);
+  // Remap _id -> id so history messages have the same shape as the ws
+  // hub's msg.new frames (see ws/hub.ts::handleSend) - the client relies on
+  // a consistent `id` field across both to dedupe messages it's already
+  // loaded (see client/src/ui/chat.ts).
+  const messages = docs.map(({ _id, ...rest }) => ({ id: _id, ...rest }));
   res.json({ messages });
 });

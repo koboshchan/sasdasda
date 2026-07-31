@@ -1,17 +1,17 @@
-// IndexedDB-backed local vault: the identity keypair, per-room secret
-// codes/AES keys, pinned peer public keys, and the current session. None of
-// this is ever sent to the server except the deliberate, explicit "export
-// identity" backup flow (see crypto/identity.ts) and the derived values
-// (H2, RSA-wrapped hashes, signatures) that the rest of the app computes
-// from it.
+// IndexedDB-backed local vault: the per-account derived identity seed,
+// per-room secret codes/AES keys, pinned peer public keys, and the current
+// session. None of this is ever sent to the server except the derived
+// values (H2, RSA-wrapped hashes, signatures) that the rest of the app
+// computes from it.
 const DB_NAME = 'securecord';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (ev) => {
       const db = req.result;
+      const tx = req.transaction!;
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
       if (!db.objectStoreNames.contains('peers')) db.createObjectStore('peers', { keyPath: 'username' });
 
@@ -27,6 +27,17 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('rooms')) {
         db.createObjectStore('rooms', { keyPath: ['owner', 'roomId'] });
+      }
+
+      // v2 -> v3: the Ed25519 identity used to be a single random keypair,
+      // shared across every account ever logged into on this browser,
+      // stored under the single kv key 'identity'. It's now derived from
+      // each account's password (see crypto/identity.ts::deriveIdentity)
+      // and persisted per-account under `identity:<username>` instead - the
+      // old global entry is stale (and would be the wrong key for every
+      // account) so it's dropped here.
+      if (ev.oldVersion < 3 && ev.oldVersion >= 1) {
+        tx.objectStore('kv').delete('identity');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -77,6 +88,16 @@ export interface StoredSession {
 export const getSession = () => getKv<StoredSession>('session');
 export const setSession = (session: StoredSession) => setKv('session', session);
 export const clearSession = () => deleteKv('session');
+
+// --- Identity seed: per-account, so this browser can resume a session
+// without re-entering the password. Deleted on logout (see
+// main.ts::handleLogout) - persisting it only across an active session,
+// not indefinitely, means the derived private key doesn't sit in IndexedDB
+// once the user has explicitly signed out. ---
+
+export const getIdentitySeed = (username: string) => getKv<string>(`identity:${username}`);
+export const setIdentitySeed = (username: string, seedB64: string) => setKv(`identity:${username}`, seedB64);
+export const deleteIdentitySeed = (username: string) => deleteKv(`identity:${username}`);
 
 // --- Rooms: the secret code and derived H1 (the AES key) never leave here ---
 //

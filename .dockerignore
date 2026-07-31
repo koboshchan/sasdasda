@@ -1,0 +1,9 @@
+node_modules
+client/node_modules
+client/dist
+server/node_modules
+server/dist
+server/data
+.git
+.DS_Store
+*.tsbuildinfo

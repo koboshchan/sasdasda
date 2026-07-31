@@ -1,97 +1,81 @@
-// Ed25519 identity: generated in the browser, private key never leaves this
-// device (except through the explicit "export identity" backup flow, which
-// the user triggers themselves to move to another device - it is never
-// sent over the network). Every outgoing message is signed with it; the
-// server verifies against the public key registered at signup and rejects
-// anything unsigned or invalid (see server/src/messages.ts).
+// Ed25519 identity, derived deterministically from the account password so
+// it's reproducible on any device with nothing to export or import.
+//
+// seed = sha256("sc-ed25519-v1|" + password) is the Ed25519 secret key
+// (noble's Ed25519 secret key *is* the seed - no separate generation step).
+// This is deliberately NOT derived from PH = sha256(password), which the
+// server stores (see server/src/auth.ts) to verify logins: seeding from PH
+// would mean a compromised server could derive every user's private
+// signing key straight out of its own database and forge messages. Seeding
+// from the raw password - which never leaves this device - keeps the same
+// derive-from-password ergonomics without that exposure. The domain
+// separation prefix just keeps this seed distinct from PH even though both
+// are sha256 of the same password.
+//
+// The private key only ever exists as this derived seed. It's never sent
+// over the network; the one place it's persisted locally is a base64 copy
+// per-account (see store/vault.ts::setIdentitySeed) so a resumed session
+// doesn't need the password re-entered, and that copy is deleted on logout
+// (see main.ts::handleLogout). Every outgoing message is signed with it;
+// the server verifies against the public key registered at signup and
+// rejects anything unsigned or invalid (see server/src/messages.ts).
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { bytesToB64, b64ToBytes } from './b64.js';
-import { sha256HexBytes } from './hash.js';
+import { sha256Hex, sha256HexBytes, hexToBytes } from './hash.js';
 
 const encoder = new TextEncoder();
+const SEED_DOMAIN = 'sc-ed25519-v1|';
 
 export interface Identity {
-  publicKey: CryptoKey;
-  privateKey: CryptoKey;
+  publicKey: Uint8Array;
+  privateKey: Uint8Array; // the 32-byte seed - Ed25519's secret key format here
 }
 
-export async function generateIdentity(): Promise<Identity> {
-  const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
-    'sign',
-    'verify',
-  ])) as CryptoKeyPair;
-  return { publicKey: pair.publicKey, privateKey: pair.privateKey };
-}
-
-/** Raw 32-byte public key, base64 - this is exactly what gets registered and what the server imports to verify. */
-export async function exportPublicKeyRaw(publicKey: CryptoKey): Promise<string> {
-  const raw = await crypto.subtle.exportKey('raw', publicKey);
-  return bytesToB64(raw);
-}
-
-/** sha256 hex of the raw public key bytes - shown to users so they can compare identities out-of-band. */
-export async function fingerprint(publicKey: CryptoKey): Promise<string> {
-  const raw = await crypto.subtle.exportKey('raw', publicKey);
-  return sha256HexBytes(raw);
-}
-
-/** Same fingerprint, computed from a base64 raw public key (e.g. one fetched over REST) rather than a CryptoKey. */
-export async function fingerprintFromRawB64(rawB64: string): Promise<string> {
-  return sha256HexBytes(b64ToBytes(rawB64));
-}
-
-/**
- * Full backup of an identity as a portable JSON blob (JWK), for the
- * "export identity" flow so a user can move to a new device/browser. This
- * blob contains the private key - treat it like a password.
- */
-export async function exportIdentityBackup(identity: Identity): Promise<string> {
-  const jwk = await crypto.subtle.exportKey('jwk', identity.privateKey);
-  return JSON.stringify(jwk);
-}
-
-export async function importIdentityBackup(backupJson: string): Promise<Identity> {
-  const jwk = JSON.parse(backupJson) as JsonWebKey;
-  const privateKey = await crypto.subtle.importKey(
-    'jwk',
-    jwk,
-    { name: 'Ed25519' },
-    true,
-    ['sign'],
-  );
-  // The private-key JWK also carries the public component ('x'); strip 'd'
-  // and reuse it to reconstruct the matching public key.
-  const { d: _d, key_ops: _ops, ...pub } = jwk as JsonWebKey & { d?: string };
-  const publicKey = await crypto.subtle.importKey(
-    'jwk',
-    { ...pub, key_ops: ['verify'] },
-    { name: 'Ed25519' },
-    true,
-    ['verify'],
-  );
+/** Derives this account's signing identity from its password. Deterministic - the same password always yields the same keypair, on any device. */
+export async function deriveIdentity(password: string): Promise<Identity> {
+  const seedHex = await sha256Hex(SEED_DOMAIN + password);
+  const privateKey = hexToBytes(seedHex);
+  const publicKey = ed25519.getPublicKey(privateKey);
   return { publicKey, privateKey };
 }
 
+/** Reconstructs an identity from a previously-derived seed (base64) - used to resume a session without asking for the password again. */
+export function identityFromSeedB64(seedB64: string): Identity {
+  const privateKey = b64ToBytes(seedB64);
+  const publicKey = ed25519.getPublicKey(privateKey);
+  return { publicKey, privateKey };
+}
+
+/** The seed as base64 - what gets persisted locally per-account. Treat like a password: never send this over the network. */
+export function exportSeedB64(identity: Identity): string {
+  return bytesToB64(identity.privateKey);
+}
+
+/** Raw 32-byte public key, base64 - this is exactly what gets registered and what the server imports to verify. */
+export function exportPublicKeyRaw(publicKey: Uint8Array): string {
+  return bytesToB64(publicKey);
+}
+
+/** sha256 hex of the raw public key bytes - shown to users so they can compare identities out-of-band. */
+export function fingerprint(publicKey: Uint8Array): Promise<string> {
+  return sha256HexBytes(publicKey);
+}
+
+/** Same fingerprint, computed from a base64 raw public key (e.g. one fetched over REST) rather than local key bytes. */
+export function fingerprintFromRawB64(rawB64: string): Promise<string> {
+  return sha256HexBytes(b64ToBytes(rawB64));
+}
+
 /** Signs the canonical message string (must match server's canonicalMessage()) and returns base64. */
-export async function signMessage(privateKey: CryptoKey, canonical: string): Promise<string> {
-  const sig = await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, encoder.encode(canonical));
+export function signMessage(privateKey: Uint8Array, canonical: string): string {
+  const sig = ed25519.sign(encoder.encode(canonical), privateKey);
   return bytesToB64(sig);
 }
 
 /** Verifies a signature against a raw base64 public key (e.g. a peer's registered key). */
-export async function verifyMessage(
-  peerPublicKeyRawB64: string,
-  canonical: string,
-  sigB64: string,
-): Promise<boolean> {
+export function verifyMessage(peerPublicKeyRawB64: string, canonical: string, sigB64: string): boolean {
   try {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      b64ToBytes(peerPublicKeyRawB64) as BufferSource,
-      { name: 'Ed25519' },
-      false,
-      ['verify'],
-    );
-    return await crypto.subtle.verify({ name: 'Ed25519' }, key, b64ToBytes(sigB64) as BufferSource, encoder.encode(canonical));
+    return ed25519.verify(b64ToBytes(sigB64), encoder.encode(canonical), b64ToBytes(peerPublicKeyRawB64));
   } catch {
     return false;
   }

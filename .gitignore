@@ -5,6 +5,7 @@ node_modules
 
 # build output
 client/dist
+server/dist
 
 # server persisted state (RSA keys) - must survive rebuilds, never committed
 server/data/keys/*
