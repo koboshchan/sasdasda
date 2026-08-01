@@ -179,16 +179,16 @@ export function wireRoomsScreen(onOpenRoom: (room: StoredRoom) => void): void {
   }
 
   logoutBtn.addEventListener('click', () => {
-    window.dispatchEvent(new CustomEvent('securecord:logout'));
+    window.dispatchEvent(new CustomEvent('mango:logout'));
   });
 
-  window.addEventListener('securecord:refresh-rooms', () => {
+  window.addEventListener('mango:refresh-rooms', () => {
     void refresh();
   });
 
   // Deliberately no eager refresh() here - this screen is wired up at app
   // bootstrap, before login, when there's no session token yet. Calling
   // the authenticated GET /api/rooms at that point would always 401.
-  // main.ts dispatches 'securecord:refresh-rooms' once a session exists,
+  // main.ts dispatches 'mango:refresh-rooms' once a session exists,
   // right before actually showing this screen.
 }

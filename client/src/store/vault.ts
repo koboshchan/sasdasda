@@ -3,7 +3,7 @@
 // session. None of this is ever sent to the server except the derived
 // values (H2, RSA-wrapped hashes, signatures) that the rest of the app
 // computes from it.
-const DB_NAME = 'securecord';
+const DB_NAME = 'mango';
 const DB_VERSION = 3;
 
 function openDb(): Promise<IDBDatabase> {

@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   attachWsHub(server);
 
   server.listen(PORT, () => {
-    console.log(`SecureCord server listening on :${PORT}`);
+    console.log(`Mango server listening on :${PORT}`);
   });
 }
 

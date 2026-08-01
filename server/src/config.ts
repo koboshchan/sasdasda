@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 export const PORT = Number(process.env.PORT ?? 8080);
-export const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://mongo:27017/securecord';
+export const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://mongo:27017/mango';
 
 // /app/data in the container (bind-mounted to ./server/data on the host so
 // the RSA keypair survives image rebuilds and restarts).

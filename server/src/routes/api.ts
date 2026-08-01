@@ -105,10 +105,11 @@ apiRouter.get('/users/:username/key', requireAuth, async (req, res) => {
     return;
   }
 
-  // Self-lookup is always allowed (client/src/main.ts checks its own
-  // identity against the account's registered key on session resume).
-  // Otherwise, only resolve keys for people the requester already shares a
-  // room with - this is what keeps the endpoint from being a free
+  // Self-lookup is allowed (harmless - it's your own public key), though
+  // the client no longer needs it: the identity is derived from the
+  // password (crypto/identity.ts::deriveIdentity), not fetched from the
+  // server. Otherwise, only resolve keys for people the requester already
+  // shares a room with - this is what keeps the endpoint from being a free
   // username-enumeration oracle for every registered account.
   const isSelf = target === requester;
   if (!isSelf && !(await sharesRoomWith(requester, target))) {

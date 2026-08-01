@@ -392,11 +392,11 @@ export function wireChatScreen(): ChatController {
   backBtn.addEventListener('click', () => {
     state.currentRoom = null;
     showRoomsScreen();
-    window.dispatchEvent(new CustomEvent('securecord:refresh-rooms'));
+    window.dispatchEvent(new CustomEvent('mango:refresh-rooms'));
   });
 
   logoutBtn.addEventListener('click', () => {
-    window.dispatchEvent(new CustomEvent('securecord:logout'));
+    window.dispatchEvent(new CustomEvent('mango:logout'));
   });
 
   return { openRoom, handleIncomingMessage, handleWsError };

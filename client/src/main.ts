@@ -28,7 +28,7 @@ function connectSocket(token: string, chatCtrl: ReturnType<typeof wireChatScreen
 // is authenticated, and calling it any earlier just produces a 401.
 function showRoomsScreenAndRefresh(): void {
   showRoomsScreen();
-  window.dispatchEvent(new CustomEvent('securecord:refresh-rooms'));
+  window.dispatchEvent(new CustomEvent('mango:refresh-rooms'));
 }
 
 async function main(): Promise<void> {
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   wireRoomsScreen((room) => chatCtrl.openRoom(room));
   wireAuthScreen(onLoggedIn);
 
-  window.addEventListener('securecord:logout', () => {
+  window.addEventListener('mango:logout', () => {
     void handleLogout();
   });
 

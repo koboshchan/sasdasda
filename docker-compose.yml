@@ -21,7 +21,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      MONGO_URL: mongodb://mongo:27017/securecord
+      MONGO_URL: mongodb://mongo:27017/mango
       PORT: "8080"
     ports:
       - "8080:8080"

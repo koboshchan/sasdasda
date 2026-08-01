@@ -1,4 +1,4 @@
-# SecureCord
+# Mango
 
 A small, self-hosted, end-to-end-encrypted group chat. A `client/` (esbuild +
 TypeScript, no framework) talks to a `server/` (Express + `ws`, MongoDB) over
@@ -9,6 +9,13 @@ zero-trust. Read the [Threat model](#threat-model--limitations) section
 before treating this as a security boundary for anything that matters.
 
 ## Running it
+
+Production deployment is at `https://mango.kjt.lol`, served by whatever reverse
+proxy/TLS terminator sits in front of the `server` container's `:8080` -
+that's outside this repo. Nothing in the app hardcodes an origin (the
+client talks to `fetch()`-relative paths and `location.host` for the
+WebSocket URL - see `client/src/net/ws.ts`), so the same image runs
+correctly under any hostname it's served from, local or not.
 
 ```bash
 docker compose up --build
@@ -177,7 +184,8 @@ Other things worth knowing:
   the two, an attacker could use the response to check candidate codes
   against known rooms.
 - **`GET /api/users/:username/key` only resolves people you already share a
-  room with** (or your own key). Otherwise a single account would let
+  room with** (self-lookup is also allowed, though the client no longer
+  needs it - see point 3 above). Otherwise a single account would let
   anyone enumerate the full set of registered usernames at network speed -
   see `server/src/rooms.ts::sharesRoomWith`. Every legitimate lookup in the
   app (verifying a message's sender) is already scoped to a room you're
